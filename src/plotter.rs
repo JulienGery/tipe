@@ -1,11 +1,20 @@
 use std::sync::Arc;
 
-use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
+use glam::Vec3;
+use vulkano::memory::allocator::{MemoryTypeFilter, AllocationCreateInfo};
+use vulkano::buffer::{Buffer, BufferCreateInfo};
+use vulkano::buffer::Subbuffer;
+use vulkano::descriptor_set::PersistentDescriptorSet;
+use vulkano::buffer::allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo};
+use vulkano::buffer::BufferUsage;
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
     SubpassBeginInfo, SubpassContents,
 };
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
+use vulkano::descriptor_set::layout::{DescriptorBindingFlags, DescriptorSetLayoutBinding, DescriptorType};
+use vulkano::descriptor_set::pool::{DescriptorPool, DescriptorSetAllocateInfo};
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{
     Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
@@ -13,92 +22,38 @@ use vulkano::device::{
 use vulkano::image::view::ImageView;
 use vulkano::image::{Image, ImageUsage};
 use vulkano::instance::{Instance, InstanceCreateInfo};
-use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
-use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
-use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
-use vulkano::pipeline::graphics::multisample::MultisampleState;
-use vulkano::pipeline::graphics::rasterization::RasterizationState;
-use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
-use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
-use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
-use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
-use vulkano::pipeline::{GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
-use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::shader::ShaderModule;
+use vulkano::memory::allocator::StandardMemoryAllocator;
+use vulkano::pipeline::graphics::viewport::Viewport;
+use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass};
+use vulkano::shader::{ShaderStage, ShaderStages};
 use vulkano::swapchain::{self, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo};
 use vulkano::sync::future::FenceSignalFuture;
-use vulkano::sync::{self, GpuFuture};
+use vulkano::sync::{self, GpuFuture, PipelineStages};
 use vulkano::{Validated, VulkanError, VulkanLibrary};
+use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::platform::run_return::EventLoopExtRunReturn;
 use winit::window::{WindowBuilder, Window};
 
-use crate::circle::{self, Circle};
-use crate::types::{self, MyVertex};
+use crate::camera::{self, Camera, CameraUniformBuffer};
+use crate::circle::{vs, Circle, CircleManadger};
+use crate::types;
 
-// fn get_pipeline(
-//     device: Arc<Device>,
-//     vs: Arc<ShaderModule>,
-//     fs: Arc<ShaderModule>,
-//     render_pass: Arc<RenderPass>,
-//     viewport: Viewport,
-// ) -> Arc<GraphicsPipeline> {
-//
-//     let vs = vs.entry_point("main").unwrap();
-//     let fs = fs.entry_point("main").unwrap();
-//
-//     let vertex_input_state = [types::MyVertex::per_vertex(), Circle::per_instance()]
-//         .definition(&vs.info().input_interface)
-//         .unwrap();
-//
-//     let stages = [
-//         PipelineShaderStageCreateInfo::new(vs),
-//         PipelineShaderStageCreateInfo::new(fs),
-//     ];
-//
-//     let layout = PipelineLayout::new(
-//         device.clone(),
-//         PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
-//             .into_pipeline_layout_create_info(device.clone())
-//             .unwrap(),
-//     )
-//     .unwrap();
-//
-//     let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
-//
-//     GraphicsPipeline::new(
-//         device.clone(),
-//         None,
-//         GraphicsPipelineCreateInfo {
-//             stages: stages.into_iter().collect(),
-//             vertex_input_state: Some(vertex_input_state),
-//             input_assembly_state: Some(InputAssemblyState::default()),
-//             viewport_state: Some(ViewportState {
-//                 viewports: [viewport].into_iter().collect(),
-//                 ..Default::default()
-//             }),
-//             rasterization_state: Some(RasterizationState::default()),
-//             multisample_state: Some(MultisampleState::default()),
-//             color_blend_state: Some(ColorBlendState::with_attachment_states(
-//                 subpass.num_color_attachments(),
-//                 ColorBlendAttachmentState::default(),
-//             )),
-//             subpass: Some(subpass.into()),
-//             ..GraphicsPipelineCreateInfo::layout(layout)
-//         },
-//     )
-//     .unwrap()
-// }
 
+//maybe should not build pipeline
 fn get_command_buffers(
     command_buffer_allocator: &StandardCommandBufferAllocator,
     queue: &Arc<Queue>,
-    pipeline: &Arc<GraphicsPipeline>,
     framebuffers: &[Arc<Framebuffer>],
-    vertex_buffer: &Subbuffer<[MyVertex]>,
-    instance_buffer : &Subbuffer<[Circle]>
+    circles : &mut CircleManadger,
+    render_pass: Arc<RenderPass>,
+    viewport : Viewport,
+    descriptor_set_allocator : &StandardDescriptorSetAllocator,
+    buffer: Subbuffer<impl ?Sized>
 ) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
+    circles.build_pipeline(render_pass.clone(), viewport, descriptor_set_allocator, buffer);
+
     framebuffers
         .iter()
         .map(|framebuffer| {
@@ -106,8 +61,8 @@ fn get_command_buffers(
                 command_buffer_allocator,
                 queue.queue_family_index(),
                 CommandBufferUsage::MultipleSubmit,
-            )
-            .unwrap();
+                )
+                .unwrap();
 
             builder
                 .begin_render_pass(
@@ -119,17 +74,13 @@ fn get_command_buffers(
                         contents: SubpassContents::Inline,
                         ..Default::default()
                     },
-                )
-                .unwrap()
-                .bind_pipeline_graphics(pipeline.clone())
-                .unwrap()
-                .bind_vertex_buffers(0, vertex_buffer.clone())
-                .unwrap()
-                .bind_vertex_buffers(1, instance_buffer.clone())
-                .unwrap()
-                .draw(vertex_buffer.len() as u32, instance_buffer.len() as u32, 0, 0)
-                .unwrap()
-                .end_render_pass(Default::default())
+                    )
+                .unwrap();
+
+            //draw here
+            circles.draw(&mut builder);
+
+            builder.end_render_pass(Default::default())
                 .unwrap();
 
             builder.build().unwrap()
@@ -206,24 +157,23 @@ fn get_framebuffers(images: &[Arc<Image>], render_pass: Arc<RenderPass>) -> Vec<
 
 pub struct Plot {
     library : Arc<VulkanLibrary>,
-    event_loop : EventLoop<()>,
+    event_loop : EventLoop<()>, //render class ?
     instance : Arc<Instance>,
-    window : Arc<Window>,
-    surface : Arc<Surface>,
+    window : Arc<Window>, //render class
+    surface : Arc<Surface>, //render class
     physical_device : Arc<PhysicalDevice>,
     device : Arc<Device>,
     queue : Arc<Queue>,
-    render_pass : Arc<RenderPass>,
-    framebuffers : Vec<Arc<Framebuffer>>,
-    images : Vec<Arc<Image>>,
-    swapchain : Arc<Swapchain>,
+    render_pass : Arc<RenderPass>, //render class
+    framebuffers : Vec<Arc<Framebuffer>>, //render class
+    images : Vec<Arc<Image>>, //render class
+    swapchain : Arc<Swapchain>, //render class
     memory_allocator : Arc<StandardMemoryAllocator>,
-    circles : Vec<Circle>,
-    vs : Arc<ShaderModule>,
-    fs : Arc<ShaderModule>,
     is_bake : bool,
-    vertex_buffer : Option<Subbuffer<[MyVertex]>>,
-    instance_buffer : Option<Subbuffer<[Circle]>>
+    circles : CircleManadger, //render class
+    camera : Camera, //render class
+    descriptor_set_allocator : StandardDescriptorSetAllocator,
+    uniform_buffer : Subbuffer<[CameraUniformBuffer]> //render class
 }
 
 
@@ -301,10 +251,32 @@ impl Plot {
         let framebuffers = get_framebuffers(&images, render_pass.clone());
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-        let vs = circle::vs::load(device.clone()).expect("failed to create shader module");
-        let fs = circle::fs::load(device.clone()).expect("failed to create shader module");
+        let mut camera = Camera::new();
+        camera.set_position(Vec3::new(0., 0., -5.))
+              .set_rotation(Vec3::Z)
+              .set_perspective(60., 1920./1080., 0.1, 256.);
+
+        let descriptor_set_allocator =
+            StandardDescriptorSetAllocator::new(device.clone(), Default::default());
+
+
+        let uniform_buffer = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::UNIFORM_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            [camera.get_data()],
+        )
+        .unwrap();
 
         Self {
+            circles : CircleManadger::new(device.clone(), memory_allocator.clone()),
             library,
             event_loop,
             instance,
@@ -318,70 +290,59 @@ impl Plot {
             images,
             swapchain,
             memory_allocator,
-            circles : vec![],
-            vs,
-            fs,
+            camera,
             is_bake : false,
-            vertex_buffer : None,
-            instance_buffer : None,
+            descriptor_set_allocator,
+            uniform_buffer
         }
     }
 
     pub fn bake(&mut self) -> &mut Self {
-        let vertex_buffer = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::VERTEX_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-            },
-            Circle::vertex(),
-            )
-            .unwrap();
+        self.circles.bake();
 
-        let instance_buffer = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage : BufferUsage::VERTEX_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter : MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            self.circles.clone(),
-            )
-            .unwrap();
-
-
-        self.instance_buffer = Some(instance_buffer);
-        self.vertex_buffer = Some(vertex_buffer);
         self.is_bake = true;
         self
     }
 
-    pub fn show(&mut self) {
+    pub fn clear(&mut self) -> &mut Self {
+        self.circles.clear();
+
+        self
+    }
+
+    pub fn show(&mut self) -> &mut Self {
         if !self.is_bake {
             self.bake();
         }
 
+        self.main_loop();
+        self.clear();
+        self
+    }
+
+    pub fn scatter(&mut self, x : &Vec<f32>, y : &Vec<f32>, radius : f32, color : [f32; 4]) -> &mut Self {
+        assert!(x.len() == y.len());
+
+        let mut circles =  x.iter()
+                            .zip(y.iter())
+                            .map(|(a, b)| Circle::new(radius, [*a, *b, 0.], color))
+                            .collect();
+
+        self.circles.append(&mut circles);
+        self
+    }
+
+    fn update_uniform_buffer(&mut self) {
+        let mut content = self.uniform_buffer.write().unwrap();
+        content[0] = self.camera.get_data();
+    }
+
+    fn main_loop(&mut self) {
         let mut viewport = Viewport {
             offset: [0.0, 0.0],
             extent: self.window.inner_size().into(),
             depth_range: 0.0..=1.0,
         };
-
-        let pipeline = Circle::get_pipeline(
-            self.device.clone(),
-            self.vs.clone(),
-            self.fs.clone(),
-            self.render_pass.clone(),
-            viewport.clone(),
-            );
 
         let command_buffer_allocator =
             StandardCommandBufferAllocator::new(self.device.clone(), Default::default());
@@ -389,10 +350,12 @@ impl Plot {
         let mut command_buffers = get_command_buffers(
             &command_buffer_allocator,
             &self.queue,
-            &pipeline,
             &self.framebuffers,
-            &self.vertex_buffer.clone().unwrap(),
-            &self.instance_buffer.clone().unwrap()
+            &mut self.circles,
+            self.render_pass.clone(),
+            viewport.clone(),
+            &self.descriptor_set_allocator,
+            self.uniform_buffer.clone()
             );
 
 
@@ -438,20 +401,16 @@ impl Plot {
                         window_resized = false;
 
                         viewport.extent = new_dimensions.into();
-                        let new_pipeline = Circle::get_pipeline(
-                            self.device.clone(),
-                            self.vs.clone(),
-                            self.fs.clone(),
-                            self.render_pass.clone(),
-                            viewport.clone(),
-                            );
+
                         command_buffers = get_command_buffers(
                             &command_buffer_allocator,
                             &self.queue,
-                            &new_pipeline,
                             &new_framebuffers,
-                            &self.vertex_buffer.clone().unwrap(),
-                            &self.instance_buffer.clone().unwrap()
+                            &mut self.circles,
+                            self.render_pass.clone(),
+                            viewport.clone(),
+                            &self.descriptor_set_allocator,
+                            self.uniform_buffer.clone()
                             );
                     }
                 }
@@ -516,13 +475,6 @@ impl Plot {
             _ => (),
         });
 
-        // self.window.set_visible(false);
-    }
-
-    pub fn scatter(&mut self, x : &Vec<f32>, y : &Vec<f32>, radius : f32, color : [f32; 4]) -> &mut Self {
-        assert!(x.len() == y.len());
-
-        self.circles = x.iter().zip(y.iter()).map(|(a, b)| Circle::new(radius, [*a, *b, 0.], color)).collect();
-        self
+        self.window.set_visible(false);
     }
 }

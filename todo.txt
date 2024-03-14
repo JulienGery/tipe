@@ -1,0 +1,7 @@
+The camera should not move and should only be used to add perspective (otherwise the circle radius might depend on the data).
+Add SSAA multisampling
+Add lines && rectangles
+Circles location should be computed to fit in a [-1; 1] square region (same for rectanle for bar chart).
+A renderer class should be created in order to render multiples plots on multiples surfaces
+thus the data should not be bound to the plotter class but to the renderer class.
+One rendering class per window ?
