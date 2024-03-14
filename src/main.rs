@@ -2,6 +2,7 @@ mod plotter;
 mod circle;
 mod types;
 mod camera;
+mod renderer;
 
 use std::env;
 
