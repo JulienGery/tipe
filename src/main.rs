@@ -1,16 +1,12 @@
 mod plotter;
-mod circle;
-mod types;
-mod camera;
-mod renderer;
-mod window_surface;
 mod plot;
-mod line;
-mod rectangle;
+mod window_surface;
+mod circles;
 
 use std::env;
 
 fn main() {
+
     env::set_var("RUST_BACKTRACE", "1");
     let mut plt = plotter::Plotter::new();
 
@@ -19,6 +15,8 @@ fn main() {
     let color = [1., 0., 0., 1.];
     let radius = 0.3;
 
-    plt.scatter(x, y, radius, color)
+    plt.scatter(x.clone(), y.clone(), radius, color)
+       .new_plot()
+       .scatter(x.clone(), y.clone(), radius, color)
        .show();
 }

@@ -1,28 +1,6 @@
-use crate::renderer::Renderer;
-use crate::types::{MyVertex, Putain};
 use std::sync::Arc;
 
-use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
-use vulkano::descriptor_set::persistent::PersistentDescriptorSet;
-use vulkano::descriptor_set::WriteDescriptorSet;
-use vulkano::buffer::allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo};
-use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
-use vulkano::command_buffer::{
-    allocator::CommandBufferAllocator, AutoCommandBufferBuilder, PrimaryAutoCommandBuffer,
-};
-use vulkano::device::Device;
-use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
-use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
-use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
-use vulkano::pipeline::graphics::multisample::MultisampleState;
-use vulkano::pipeline::graphics::rasterization::RasterizationState;
-use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
-use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
-use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
-use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
-use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo};
-use vulkano::render_pass::{RenderPass, Subpass};
-use vulkano::shader::ShaderModule;
+use vulkano::{buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer}, command_buffer::{allocator::CommandBufferAllocator, AutoCommandBufferBuilder, PrimaryAutoCommandBuffer}, descriptor_set::{allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet}, device::Device, memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator}, pipeline::{graphics::{color_blend::{ColorBlendAttachmentState, ColorBlendState}, input_assembly::InputAssemblyState, multisample::MultisampleState, rasterization::RasterizationState, vertex_input::{Vertex, VertexDefinition}, viewport::{Viewport, ViewportState}, GraphicsPipelineCreateInfo}, layout::PipelineDescriptorSetLayoutCreateInfo, GraphicsPipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo}, render_pass::{RenderPass, Subpass}, shader::ShaderModule};
 
 #[derive(BufferContents, Vertex, Clone, Debug)]
 #[repr(C)]
@@ -33,6 +11,13 @@ pub struct Circle {
     pub color: [f32; 4],
     #[format(R32_SFLOAT)]
     pub radius: f32,
+}
+
+#[derive(BufferContents, Vertex, Clone, Debug)]
+#[repr(C)]
+pub struct MyVertex {
+    #[format(R32G32B32_SFLOAT)]
+    pub local_position: [f32; 3],
 }
 
 pub mod vs {
@@ -51,8 +36,8 @@ pub mod vs {
             //uniform data
             // layout(set = 0, binding = 0) uniform UBO
             // {
-            //     mat4 projection;
-            //     mat4 modelview;
+                // mat4 projection;
+                // mat4 modelview;
             // } ubo;
 
 
@@ -128,30 +113,35 @@ impl Circle {
     }
 }
 
-// #[derive(Debug)]
+
 pub struct CircleManadger {
     device: Arc<Device>,
     memory_allocator: Arc<StandardMemoryAllocator>,
     circles: Vec<Circle>,
-    // vs: Arc<ShaderModule>,
-    // fs: Arc<ShaderModule>,
+    vs: Arc<ShaderModule>,
+    fs: Arc<ShaderModule>,
     vertex_buffer: Option<Subbuffer<[MyVertex]>>,
     instance_buffer: Option<Subbuffer<[Circle]>>,
     pipeline: Option<Arc<GraphicsPipeline>>,
-    descriptor_set : Option<Arc<PersistentDescriptorSet>>,
+    // descriptor_set : Option<Arc<PersistentDescriptorSet>>,
     // uniform_buffer : Option<SubbufferAllocator>
 }
 
 impl CircleManadger {
     pub fn new(device: Arc<Device>, memory_allocator: Arc<StandardMemoryAllocator>) -> Self {
+        let vs = vs::load(device.clone()).unwrap();
+        let fs = fs::load(device.clone()).unwrap();
+
         Self {
             device,
             memory_allocator,
             circles: vec![],
+            vs,
+            fs,
             pipeline: None,
             vertex_buffer: None,
             instance_buffer: None,
-            descriptor_set : None
+            // descriptor_set : None
             // uniform_buffer : None
         }
     }
@@ -174,14 +164,11 @@ impl CircleManadger {
         &mut self,
         render_pass: Arc<RenderPass>,
         viewport: Viewport,
-        descriptor_set_allocator : &StandardDescriptorSetAllocator,
-        // buffer: Subbuffer<impl ?Sized>,
-        renderer : &Renderer
+        // descriptor_set_allocator : &StandardDescriptorSetAllocator,
+        // buffer: Subbuffer<impl ?Sized>
     ) -> &mut Self {
-
-        //need to be changed
-        let vs = renderer.vs.entry_point("main").unwrap();
-        let fs = renderer.fs.entry_point("main").unwrap();
+        let vs = self.vs.entry_point("main").unwrap();
+        let fs = self.fs.entry_point("main").unwrap();
 
         let vertex_input_state = [MyVertex::per_vertex(), Circle::per_instance()]
             .definition(&vs.info().input_interface)
@@ -250,13 +237,13 @@ impl CircleManadger {
         //     [],
         //     )
         //     .unwrap();
-
+        //
         // self.descriptor_set = Some(descriptor_set);
         self.pipeline = Some(pipeline);
         self
     }
 
-    pub fn bake(&mut self) -> &mut Self {
+    pub fn create_buffers(&mut self) -> &mut Self {
         let vertex_buffer = Buffer::from_iter(
             self.memory_allocator.clone(),
             BufferCreateInfo {
@@ -311,12 +298,12 @@ impl CircleManadger {
         builder
             .bind_pipeline_graphics(self.pipeline.clone().unwrap())
             .unwrap()
-            .bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                self.pipeline.clone().unwrap().layout().clone(),
-                0,
-                self.descriptor_set.clone().unwrap())
-            .unwrap()
+            // .bind_descriptor_sets(
+            //     PipelineBindPoint::Graphics,
+            //     self.pipeline.clone().unwrap().layout().clone(),
+            //     0,
+            //     self.descriptor_set.clone().unwrap())
+            // .unwrap()
             .bind_vertex_buffers(0, self.vertex_buffer.clone().unwrap())
             .unwrap()
             .bind_vertex_buffers(1, self.instance_buffer.clone().unwrap())
@@ -328,32 +315,5 @@ impl CircleManadger {
                 0,
             )
             .unwrap();
-    }
-
-
-    pub fn render<A>(&mut self, builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer<A>, A>) -> &mut Self
-    where A: CommandBufferAllocator,
-    {
-        builder.bind_pipeline_graphics(self.pipeline.clone().unwrap())
-               .unwrap()
-               // .bind_descriptor_sets(
-               //     PipelineBindPoint::Graphics,
-               //     self.pipeline.clone().unwrap().layout().clone(),
-               //     0,
-               //     self.descriptor_set.clone().unwrap())
-               // .unwrap()
-               .bind_vertex_buffers(0, self.vertex_buffer.clone().unwrap())
-               .unwrap()
-               .bind_vertex_buffers(1, self.instance_buffer.clone().unwrap())
-               .unwrap()
-               .draw(
-                   self.vertex_buffer.clone().unwrap().len() as u32,
-                   self.instance_buffer.clone().unwrap().len() as u32,
-                   0,
-                   0
-                )
-               .unwrap();
-
-        self
     }
 }
