@@ -3,22 +3,21 @@ use std::sync::Arc;
 use vulkano::{device::Device, instance::Instance, memory::allocator::StandardMemoryAllocator};
 use winit::{event_loop::EventLoop, window::WindowId};
 
-use crate::{circles::{Circle, CircleManadger}, window_surface::WindowSurface};
+use crate::{circles::Circle, window_surface::WindowSurface};
 
 pub struct Plot {
     pub window_surface : WindowSurface,
-    pub circles : CircleManadger,
+    pub circles: Vec<Circle>
 }
 
 impl Plot {
     pub fn new(instance : Arc<Instance>, device : Arc<Device>, event_loop : &EventLoop<()>, memory_allocator : Arc<StandardMemoryAllocator>) -> Self {
-
         let window_surface = WindowSurface::new(instance.clone(), device.clone(), event_loop);
-        let circles = CircleManadger::new(device.clone(), memory_allocator.clone());
+        // let circles = CircleManadger::new(device.clone(), memory_allocator.clone());
 
         Self {
             window_surface,
-            circles
+            circles: vec![]
         }
     }
 
@@ -31,10 +30,10 @@ impl Plot {
         self
     }
 
-    pub fn create_buffer(&mut self) -> &mut Self {
-        self.circles.create_buffers();
-        self
-    }
+    // pub fn create_buffer(&mut self) -> &mut Self {
+    //     self.circles.create_buffers();
+    //     self
+    // }
 
     pub fn clear(&mut self) -> &mut Self {
         self.circles.clear();

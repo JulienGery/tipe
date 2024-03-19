@@ -1,59 +1,25 @@
 use core::panic;
 use std::{collections::HashMap, sync::Arc};
 
-use vulkano::{command_buffer::{self, allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents}, descriptor_set::allocator::StandardDescriptorSetAllocator, device::{self, physical::{PhysicalDevice, PhysicalDeviceType}, Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags}, instance::{Instance, InstanceCreateInfo}, memory::allocator::StandardMemoryAllocator, pipeline::graphics::viewport::Viewport, render_pass::{Framebuffer, RenderPass}, swapchain::{self, Surface, SwapchainPresentInfo}, sync::{future::FenceSignalFuture, GpuFuture}, Validated, VulkanError};
+use vulkano::{command_buffer::{allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents}, device::{physical::{PhysicalDevice, PhysicalDeviceType}, Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags}, instance::{Instance, InstanceCreateInfo}, memory::allocator::StandardMemoryAllocator, pipeline::graphics::viewport::Viewport, render_pass::{Framebuffer, RenderPass}, swapchain::{self, Surface, SwapchainPresentInfo}, sync::{future::FenceSignalFuture, GpuFuture}, Validated, VulkanError};
 use winit::{event::{Event, WindowEvent}, platform::run_return::EventLoopExtRunReturn, window::{WindowBuilder, WindowId}};
 use winit::event_loop::{ControlFlow, EventLoop};
-use crate::{circles::{Circle, CircleManadger}, plot::Plot, window_surface::WindowSurface};
+use crate::{circles::Circle, plot::Plot, renderer::Renderer};
 
 pub struct Plotter {
     instance : Arc<Instance>,
     device : Arc<Device>,
     event_loop : EventLoop<()>,
     plots : HashMap<WindowId, Plot>,
-    // plot: Plot,
-    //replace with plot
-    // window_surface : WindowSurface,
-    // circles : CircleManadger,
     queue:  Arc<Queue>,
     current_plot: WindowId,
-    memory_allocator : Arc<StandardMemoryAllocator>
+    memory_allocator : Arc<StandardMemoryAllocator>,
+    renderer: Renderer
 }
 
-
-
-fn select_physical_device(
-    instance: &Arc<Instance>,
-    surface: &Arc<Surface>,
-    device_extensions: &DeviceExtensions,
-) -> (Arc<PhysicalDevice>, u32) {
-    instance
-        .enumerate_physical_devices()
-        .expect("failed to enumerate physical devices")
-        .filter(|p| p.supported_extensions().contains(device_extensions))
-        .filter_map(|p| {
-            p.queue_family_properties()
-                .iter()
-                .enumerate()
-                .position(|(i, q)| {
-                    q.queue_flags.contains(QueueFlags::GRAPHICS)
-                        && p.surface_support(i as u32, surface).unwrap_or(false)
-                })
-                .map(|q| (p, q as u32))
-        })
-        .min_by_key(|(p, _)| match p.properties().device_type {
-            PhysicalDeviceType::DiscreteGpu => 0,
-            PhysicalDeviceType::IntegratedGpu => 1,
-            PhysicalDeviceType::VirtualGpu => 2,
-            PhysicalDeviceType::Cpu => 3,
-            _ => 4,
-        })
-        .expect("no device available")
-}
 
 impl Plotter {
     pub fn new() -> Self {
-
         let library = vulkano::VulkanLibrary::new().expect("no local vulkan library/DLL");
         let event_loop = EventLoop::new();
 
@@ -89,10 +55,11 @@ impl Plotter {
             .expect("failed to create device");
 
         let queue = queues.next().unwrap();
-
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-        let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone(), Default::default());
-        let circles = CircleManadger::new(device.clone(), memory_allocator.clone());
+        // let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone(), Default::default());
+        let renderer = Renderer::new(device.clone(), memory_allocator.clone(), queue.clone());
+
+        println!("{:?}", device.physical_device().properties().framebuffer_color_sample_counts & device.physical_device().properties().framebuffer_depth_sample_counts);
 
         let plot = Plot::new(instance.clone(), device.clone(), &event_loop, memory_allocator.clone());
         let current_plot = plot.id();
@@ -106,7 +73,8 @@ impl Plotter {
             plots,
             queue,
             current_plot,
-            memory_allocator
+            memory_allocator,
+            renderer
         }
     }
 
@@ -149,142 +117,126 @@ impl Plotter {
     }
 
     pub fn create_buffers(&mut self) -> &mut Self {
-        for plot in self.plots.values_mut() {
-            plot.create_buffer();
-        }
+        // for plot in self.plots.values_mut() {
+        //     plot.create_buffer();
+        // }
+        self.renderer.create_buffer(self.plots.values());
 
         self
     }
 
     pub fn show(&mut self) -> &mut Self {
         self.create_buffers();
-
         self.main_loop();
-
         self.clear()
     }
 
     fn main_loop(&mut self)  -> &mut Self{
-        //does not work if not borrowed like this
-        let plot = self.plots.get_mut(&self.current_plot).unwrap();
+        let mut viewports = HashMap::new();
+        for plot in self.plots.values_mut() {
+            let viewport = Viewport {
+                offset: [0., 0.],
+                extent: plot.window_surface.inner_size().into(),
+                depth_range: 0.0..=1.0,
+            };
 
-        //need to be moved to window_surface
-        let mut viewport = Viewport {
-            offset: [0., 0.],
-            extent: plot.window_surface.inner_size().into(),
-            depth_range: 0.0..=1.0,
-        };
+            self.renderer.build_command_buffers(&plot, viewport.clone());
+            viewports.insert(plot.id(), viewport);
+        }
 
-
-        let command_buffer_allocator = StandardCommandBufferAllocator::new(self.device.clone(), Default::default());
-
-        let mut command_buffers = get_command_buffers(
-            &command_buffer_allocator,
-            &self.queue,
-            &plot.window_surface.framebuffers,
-            &mut plot.circles,
-            plot.window_surface.render_pass.clone(),
-            viewport.clone()
-            );
-
-        let mut window_resized = false;
-        let mut recreate_swapchain = false;
-
-        let frames_in_flight = plot.window_surface.images.len();
-        let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
-        let mut previous_fence_i = 0;
 
         self.event_loop.run_return(|event, _, control_flow| match event {
             Event::WindowEvent {
-                // window_id,
+                window_id,
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                *control_flow = ControlFlow::Exit;
+                println!("removed : {:?}", window_id);
+
+                match self.plots.remove_entry(&window_id) {
+                    Some((_key, plot)) => plot.window_surface.window.set_visible(false),
+                    None => println!("try to close window that does not exist")
+                }
+
+                if self.plots.len() == 0 {
+                    *control_flow = ControlFlow::Exit;
+                }
             }
             Event::WindowEvent {
+                window_id,
                 event: WindowEvent::Resized(_),
                 ..
-            } => {
-                window_resized = true;
-            }
-            Event::RedrawRequested(window_id) => println!("window_id : {:?}", window_id),
+            } => self.plots.get_mut(&window_id).unwrap().window_surface.window_resized = true,
+
+            // Event::RedrawRequested(window_id) => println!("window_id : {:?}", window_id),
             Event::MainEventsCleared => {
-                if window_resized || recreate_swapchain {
-                    recreate_swapchain = false;
+                for plot in self.plots.values_mut() {
 
-                    plot.window_surface.recreate_swapchain();
-                    if window_resized {
-                        window_resized = false;
+                    let viewport = viewports.get_mut(&plot.id()).unwrap();
 
-                        viewport.extent = plot.window_surface.inner_size().into();
+                    if plot.window_surface.recreate_swapchain || plot.window_surface.window_resized {
+                        plot.window_surface.recreate_swapchain();
 
-                        command_buffers = get_command_buffers(
-                            &command_buffer_allocator,
-                            &self.queue,
-                            &plot.window_surface.framebuffers,
-                            &mut plot.circles,
-                            plot.window_surface.render_pass.clone(),
-                            viewport.clone()
-                            );
+                        if plot.window_surface.window_resized {
+                            plot.window_surface.window_resized = false;
+                            viewport.extent = plot.window_surface.inner_size().into();
+                            self.renderer.build_command_buffers(&plot, viewport.clone());
+                        }
                     }
 
-                }
+                    let (image_i, suboptimal, acquire_future) =
+                        match plot.window_surface.acquire_next_image().map_err(Validated::unwrap)
+                        {
+                            Ok(r) => r,
+                            Err(VulkanError::OutOfDate) => return,
+                            Err(e) => panic!("failed to acquire next image: {e}"),
+                        };
 
-                let (image_i, suboptimal, acquire_future) =
-                    match swapchain::acquire_next_image(plot.window_surface.swapchain.clone(), None).map_err(Validated::unwrap)
-                    {
-                        Ok(r) => r,
-                        Err(VulkanError::OutOfDate) => {
-                            recreate_swapchain = true;
-                            return;
+                    if suboptimal {
+                        plot.window_surface.recreate_swapchain = true;
+                    }
+
+                    if let Some(image_fence) = &plot.window_surface.fences[image_i as usize] {
+                        image_fence.wait(None).unwrap();
+                    }
+
+                    let previous_fence_i = plot.window_surface.previous_fence_i;
+                    let previous_future = match plot.window_surface.fences[previous_fence_i as usize].clone() {
+                        None => {
+                            let mut now = vulkano::sync::now(self.device.clone());
+                            now.cleanup_finished();
+
+                            now.boxed()
                         }
-                        Err(e) => panic!("failed to acquire next image: {e}"),
+
+                        Some(fence) => fence.boxed(),
                     };
 
-                if suboptimal {
-                    recreate_swapchain = true;
+                    let command_buffers = self.renderer.get_command_buffer(plot).unwrap();
+                    let future = previous_future
+                        .join(acquire_future)
+                        .then_execute(self.queue.clone(), command_buffers[image_i as usize].clone())
+                        .unwrap()
+                        .then_swapchain_present(
+                            self.queue.clone(),
+                            SwapchainPresentInfo::swapchain_image_index(plot.window_surface.swapchain.clone(), image_i),
+                            )
+                        .then_signal_fence_and_flush();
+
+                    plot.window_surface.fences[image_i as usize] = match future.map_err(Validated::unwrap) {
+                        Ok(value) => Some(Arc::new(value)),
+                        Err(VulkanError::OutOfDate) => {
+                            plot.window_surface.recreate_swapchain = true;
+                            None
+                        }
+                        Err(e) => {
+                            println!("failed to flush future: {e}");
+                            None
+                        }
+                    };
+
+                    plot.window_surface.previous_fence_i = image_i;
                 }
-
-                if let Some(image_fence) = &fences[image_i as usize] {
-                    image_fence.wait(None).unwrap();
-                }
-
-                let previous_future = match fences[previous_fence_i as usize].clone() {
-
-                    None => {
-                        let mut now = vulkano::sync::now(self.device.clone());
-                        now.cleanup_finished();
-
-                        now.boxed()
-                    }
-
-                    Some(fence) => fence.boxed(),
-                };
-
-                let future = previous_future
-                    .join(acquire_future)
-                    .then_execute(self.queue.clone(), command_buffers[image_i as usize].clone())
-                    .unwrap()
-                    .then_swapchain_present(
-                        self.queue.clone(),
-                        SwapchainPresentInfo::swapchain_image_index(plot.window_surface.swapchain.clone(), image_i),
-                        )
-                    .then_signal_fence_and_flush();
-
-                fences[image_i as usize] = match future.map_err(Validated::unwrap) {
-                    Ok(value) => Some(Arc::new(value)),
-                    Err(VulkanError::OutOfDate) => {
-                        recreate_swapchain = true;
-                        None
-                    }
-                    Err(e) => {
-                        println!("failed to flush future: {e}");
-                        None
-                    }
-                };
-
-                previous_fence_i = image_i;
             }
             _ => (),
 
@@ -295,48 +247,77 @@ impl Plotter {
 }
 
 
+// fn get_command_buffers(
+//     command_buffer_allocator: &StandardCommandBufferAllocator,
+//     queue: &Arc<Queue>,
+//     framebuffers: &[Arc<Framebuffer>],
+//     plot: &Plot,
+//     // circles : &mut CircleManadger,
+//     render_pass: Arc<RenderPass>,
+//     viewport : Viewport,
+//     // descriptor_set_allocator : &StandardDescriptorSetAllocator,
+// ) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
+//     circles.build_pipeline(render_pass.clone(), viewport);
+//
+//     framebuffers
+//         .iter()
+//         .map(|framebuffer| {
+//             let mut builder = AutoCommandBufferBuilder::primary(
+//                 command_buffer_allocator,
+//                 queue.queue_family_index(),
+//                 CommandBufferUsage::MultipleSubmit,
+//                 )
+//                 .unwrap();
+//
+//             builder
+//                 .begin_render_pass(
+//                     RenderPassBeginInfo {
+//                         clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
+//                         ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+//                     },
+//                     SubpassBeginInfo {
+//                         contents: SubpassContents::Inline,
+//                         ..Default::default()
+//                     },
+//                     )
+//                 .unwrap();
+//
+//             //draw here
+//             circles.draw(&mut builder);
+//
+//             builder.end_render_pass(Default::default())
+//                 .unwrap();
+//
+//             builder.build().unwrap()
+//         })
+//         .collect()
+// }
 
-fn get_command_buffers(
-    command_buffer_allocator: &StandardCommandBufferAllocator,
-    queue: &Arc<Queue>,
-    framebuffers: &[Arc<Framebuffer>],
-    circles : &mut CircleManadger,
-    render_pass: Arc<RenderPass>,
-    viewport : Viewport,
-    // descriptor_set_allocator : &StandardDescriptorSetAllocator,
-) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
-    circles.build_pipeline(render_pass.clone(), viewport);
-
-    framebuffers
-        .iter()
-        .map(|framebuffer| {
-            let mut builder = AutoCommandBufferBuilder::primary(
-                command_buffer_allocator,
-                queue.queue_family_index(),
-                CommandBufferUsage::MultipleSubmit,
-                )
-                .unwrap();
-
-            builder
-                .begin_render_pass(
-                    RenderPassBeginInfo {
-                        clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
-                        ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-                    },
-                    SubpassBeginInfo {
-                        contents: SubpassContents::Inline,
-                        ..Default::default()
-                    },
-                    )
-                .unwrap();
-
-            //draw here
-            circles.draw(&mut builder);
-
-            builder.end_render_pass(Default::default())
-                .unwrap();
-
-            builder.build().unwrap()
+fn select_physical_device(
+    instance: &Arc<Instance>,
+    surface: &Arc<Surface>,
+    device_extensions: &DeviceExtensions,
+) -> (Arc<PhysicalDevice>, u32) {
+    instance
+        .enumerate_physical_devices()
+        .expect("failed to enumerate physical devices")
+        .filter(|p| p.supported_extensions().contains(device_extensions))
+        .filter_map(|p| {
+            p.queue_family_properties()
+                .iter()
+                .enumerate()
+                .position(|(i, q)| {
+                    q.queue_flags.contains(QueueFlags::GRAPHICS)
+                        && p.surface_support(i as u32, surface).unwrap_or(false)
+                })
+                .map(|q| (p, q as u32))
         })
-        .collect()
+        .min_by_key(|(p, _)| match p.properties().device_type {
+            PhysicalDeviceType::DiscreteGpu => 0,
+            PhysicalDeviceType::IntegratedGpu => 1,
+            PhysicalDeviceType::VirtualGpu => 2,
+            PhysicalDeviceType::Cpu => 3,
+            _ => 4,
+        })
+        .expect("no device available")
 }
