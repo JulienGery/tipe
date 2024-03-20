@@ -6,10 +6,10 @@ use winit::window::WindowId;
 use crate::{circle_manadger::CircleManadger, plot::Plot};
 
 pub struct Renderer {
-    device: Arc<Device>,
+    // device: Arc<Device>,
     queue: Arc<Queue>,
     command_buffer_allocator: StandardCommandBufferAllocator,
-    memory_allocator: Arc<StandardMemoryAllocator>,
+    // memory_allocator: Arc<StandardMemoryAllocator>,
     circles_manadger: CircleManadger,
     command_buffers: HashMap<WindowId, Vec<Arc<PrimaryAutoCommandBuffer>>>
 }
@@ -20,10 +20,10 @@ impl Renderer {
         let command_buffer_allocator = StandardCommandBufferAllocator::new(device.clone(), Default::default());
 
         Self {
-            device,
+            // device,
             queue,
             command_buffer_allocator,
-            memory_allocator,
+            // memory_allocator,
             circles_manadger,
             command_buffers: HashMap::new()
         }
@@ -49,7 +49,7 @@ impl Renderer {
         // descriptor_set_allocator : &StandardDescriptorSetAllocator,
         )
     {
-        self.circles_manadger.build_pipeline(plot.window_surface.render_pass.clone(), viewport, plot);
+        self.circles_manadger.build_pipeline(plot.window_surface.render_pass.clone(), viewport);
         // circles.build_pipeline(render_pass.clone(), viewport);
 
         let command_buffers = plot.window_surface.framebuffers

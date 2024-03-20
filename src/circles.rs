@@ -31,12 +31,12 @@ pub mod vs {
             layout(location = 2) in vec4 color;
             layout(location = 3) in float radius;
 
-            //uniform data
-            // layout(set = 0, binding = 0) uniform UBO
-            // {
-                // mat4 projection;
-                // mat4 modelview;
-            // } ubo;
+            // uniform data
+            layout(set = 0, binding = 0) uniform UBO
+            {
+                mat4 projection;
+                mat4 modelview;
+            } ubo;
 
 
             //out
@@ -47,7 +47,7 @@ pub mod vs {
                 o_position = local_position;
                 o_color = color;
 
-                gl_Position = vec4(local_position * radius + circle_position, 1.0);
+                gl_Position =  ubo.projection * ubo.modelview * vec4(local_position * radius + circle_position, 1.0);
             }
             ",
     }

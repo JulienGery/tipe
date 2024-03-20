@@ -2,7 +2,7 @@ use core::panic;
 use std::{collections::HashMap, sync::Arc};
 
 use vulkano::{command_buffer::{allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents}, device::{physical::{PhysicalDevice, PhysicalDeviceType}, Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags}, instance::{Instance, InstanceCreateInfo}, memory::allocator::StandardMemoryAllocator, pipeline::graphics::viewport::Viewport, render_pass::{Framebuffer, RenderPass}, swapchain::{self, Surface, SwapchainPresentInfo}, sync::{future::FenceSignalFuture, GpuFuture}, Validated, VulkanError};
-use winit::{event::{Event, WindowEvent}, platform::run_return::EventLoopExtRunReturn, window::{WindowBuilder, WindowId}};
+use winit::{event::{Event, WindowEvent, KeyboardInput}, platform::run_return::EventLoopExtRunReturn, window::{WindowBuilder, WindowId}};
 use winit::event_loop::{ControlFlow, EventLoop};
 use crate::{circles::Circle, plot::Plot, renderer::Renderer};
 
@@ -13,7 +13,7 @@ pub struct Plotter {
     plots : HashMap<WindowId, Plot>,
     queue:  Arc<Queue>,
     current_plot: WindowId,
-    memory_allocator : Arc<StandardMemoryAllocator>,
+    // memory_allocator : Arc<StandardMemoryAllocator>,
     renderer: Renderer
 }
 
@@ -61,7 +61,7 @@ impl Plotter {
 
         println!("{:?}", device.physical_device().properties().framebuffer_color_sample_counts & device.physical_device().properties().framebuffer_depth_sample_counts);
 
-        let plot = Plot::new(instance.clone(), device.clone(), &event_loop, memory_allocator.clone());
+        let plot = Plot::new(instance.clone(), device.clone(), &event_loop);
         let current_plot = plot.id();
         let mut plots = HashMap::new();
         plots.insert(current_plot, plot);
@@ -73,7 +73,7 @@ impl Plotter {
             plots,
             queue,
             current_plot,
-            memory_allocator,
+            // memory_allocator,
             renderer
         }
     }
@@ -108,7 +108,6 @@ impl Plotter {
             self.instance.clone(),
             self.device.clone(),
             &self.event_loop,
-            self.memory_allocator.clone()
             );
 
         self.current_plot = plot.id();
@@ -140,6 +139,7 @@ impl Plotter {
                 depth_range: 0.0..=1.0,
             };
 
+            plot.camera.update_view_matrix();
             self.renderer.build_command_buffers(&plot, viewport.clone());
             viewports.insert(plot.id(), viewport);
         }
@@ -167,7 +167,6 @@ impl Plotter {
                 event: WindowEvent::Resized(_),
                 ..
             } => self.plots.get_mut(&window_id).unwrap().window_surface.window_resized = true,
-
             // Event::RedrawRequested(window_id) => println!("window_id : {:?}", window_id),
             Event::MainEventsCleared => {
                 for plot in self.plots.values_mut() {
@@ -176,6 +175,7 @@ impl Plotter {
 
                     if plot.window_surface.recreate_swapchain || plot.window_surface.window_resized {
                         plot.window_surface.recreate_swapchain();
+                        plot.update_camera(160., 0., 1.);
 
                         if plot.window_surface.window_resized {
                             plot.window_surface.window_resized = false;
